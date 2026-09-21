@@ -22,7 +22,7 @@ The API will be available at `http://127.0.0.1:8000`. Interactive documentation 
 DropForge uses PostgreSQL. Configure `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER` and `PGPASSWORD` in your environment, then create the schema:
 
 ```bash
-psql -f schema.sql
+uv run alembic upgrade head
 ```
 
 The local `.env` file is ignored by Git and must never be committed.
