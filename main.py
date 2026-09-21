@@ -2,7 +2,8 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from uuid import uuid4
 from datetime import datetime, timedelta, timezone
-from threading import Lock
+
+from database import get_connection
 
 
 # Описываем JSON, который клиент присылает для создания drop
@@ -22,7 +23,6 @@ class Drop(BaseModel):
 
 app = FastAPI()
 drops: dict[str, Drop] = {}
-drops_lock = Lock()
 
 # Проверяем, что API запущен и отвечает на GET-запросы
 @app.get("/")
@@ -32,24 +32,50 @@ def read_root():
 # Возвращаем один сохранённый drop по его ID из URL
 @app.get("/drops/{drop_id}")
 def get_drop(drop_id: str):
-    with drops_lock:
-        drop = drops.get(drop_id)
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, content, expires_at, views_remaining
+                FROM drops
+                WHERE id = %s
+                FOR UPDATE
+                """,
+                (drop_id,),
+            )
+            row = cursor.fetchone()
+            
+            if row is None:
+                raise HTTPException(404, detail="Drop not found")
 
-        if drop is None:
-            raise HTTPException(404, detail="Drop not found")
+            drop = Drop(
+                id=str(row[0]),
+                content=row[1],
+                expires_at=row[2],
+                views_remaining=row[3],
+            )
 
-        if drop.expires_at is not None and drop.expires_at <= datetime.now(timezone.utc):
-            raise HTTPException(status_code=410, detail="drop lifetime expired")
+            if drop.expires_at is not None and drop.expires_at <= datetime.now(timezone.utc):
+                raise HTTPException(status_code=410, detail="drop lifetime expired")
 
-        if drop.views_remaining is not None and drop.views_remaining <= 0:
-            raise HTTPException(status_code=410, detail="View limit reached")
+            if drop.views_remaining is not None and drop.views_remaining <= 0:
+                raise HTTPException(status_code=410, detail="View limit reached")
+            
+            if drop.views_remaining is not None:
+                cursor.execute(
+                    """
+                    UPDATE drops
+                    SET views_remaining = views_remaining - 1
+                    WHERE id = %s
+                    RETURNING views_remaining
+                    """,
+                    (drop_id,),
+                )
+                drop.views_remaining = cursor.fetchone()[0]
+                
+            return drop
 
-        if drop.views_remaining is not None:
-            drop.views_remaining -= 1
-
-        return drop.model_dump()
-
-# Создаём drop из JSON, присланного клиентом, и сохраняем его в памяти
+# Создаём drop из JSON, присланного клиентом, и сохраняем его в PostgreSQL
 @app.post("/drops", status_code=201)
 def create_drop(payload: DropCreate):
     if payload.ttl_seconds is not None and payload.ttl_seconds <= 0:
@@ -63,17 +89,60 @@ def create_drop(payload: DropCreate):
         expires_at = datetime.now(timezone.utc) + timedelta(seconds=payload.ttl_seconds)
 
     drop_id = str(uuid4())
-    created_drop = Drop(id=drop_id, content=payload.content, expires_at=expires_at, views_remaining=payload.max_views)
-    drops[drop_id] = created_drop
-    return created_drop
+    
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO drops (
+                    id, 
+                    content, 
+                    expires_at, 
+                    views_remaining
+                    )
+                VALUES (
+                    %s, 
+                    %s, 
+                    %s,
+                    %s
+                )
+                RETURNING id, content, expires_at, views_remaining
+                """,
+                (drop_id, 
+                 payload.content,
+                 expires_at,
+                 payload.max_views,
+                 )
+            )
 
+            row = cursor.fetchone()
+    
+    created_drop = Drop(
+        id=str(row[0]), 
+        content=row[1],
+        expires_at=row[2],
+        views_remaining=row[3])
+    
+    return created_drop
 
 # Удаляем сохранённый drop по ID; успешное удаление возвращает 204 без тела
 @app.delete("/drops/{drop_id}", status_code=204)
 def delete_drop(drop_id: str):
-    content = drops.pop(drop_id, None)
+    
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                 DELETE FROM drops
+                WHERE id = %s
+                RETURNING id
+                """, 
+                (drop_id,)
+                
+            )
+            row = cursor.fetchone()
 
-    if content is None:
+    if row is None:
         raise HTTPException(404, detail="Drop not found")
 
     return None

@@ -4,7 +4,7 @@ A small API for sharing text that should not live forever.
 
 DropForge creates a text drop and gives it a unique ID. A drop may expire after a set number of seconds or become unavailable after a set number of views.
 
-The current version supports creating, reading and deleting drops. Data is still stored in memory, so restarting the server removes everything. PostgreSQL persistence is the next step.
+The current version supports creating, reading and deleting drops. Drops are stored in PostgreSQL, so they survive server restarts.
 
 ## Run locally
 
@@ -16,6 +16,16 @@ uv run uvicorn main:app --reload
 ```
 
 The API will be available at `http://127.0.0.1:8000`. Interactive documentation is at `http://127.0.0.1:8000/docs`.
+
+## Database
+
+DropForge uses PostgreSQL. Configure `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER` and `PGPASSWORD` in your environment, then create the schema:
+
+```bash
+psql -f schema.sql
+```
+
+The local `.env` file is ignored by Git and must never be committed.
 
 ## Create a drop
 
